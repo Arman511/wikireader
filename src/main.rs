@@ -1,6 +1,7 @@
-use confy;
 use random_word::Lang;
 use serde::{Deserialize, Serialize};
+use soup::{NodeExt, QueryBuilderExt, Soup};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -21,6 +22,11 @@ impl Clone for SessionConfig {
             article_name: self.article_name.clone(),
         }
     }
+}
+
+struct Articles {
+    title: String,
+    description: String,
 }
 
 fn get_options(msg: String, options: Vec<String>) -> usize {
@@ -77,34 +83,46 @@ fn show_article(article: Vec<String>) {
 }
 
 fn get_previous_article() -> Vec<String> {
-    let article = confy::load("wikireader", "SessionConfig").unwrap_or_default();
-    get_article(article)
+    let article: SessionConfig = confy::load("wikireader", "SessionConfig").unwrap_or_default();
+    get_article(article.article_name)
 }
 
 fn search_for_article() -> Vec<String> {
     println!("Search for article");
-    let mut article_name;
+    let mut search_result;
     loop {
         let mut input = String::new();
         println!("Enter article name: ");
         std::io::stdin()
             .read_line(&mut input)
             .expect("Failed to read line");
-        article_name = input.trim().to_owned().replace(" ", "_");
-        let not_article_is_disambiguation = check_article(article_name.to_owned());
-        if not_article_is_disambiguation {
+        let article_name = input.trim().to_owned();
+        search_result = search_for_articles(article_name.to_owned());
+        if search_result.is_ok() {
             break;
+        } else if search_result.is_err() {
+            println!("No article found with that name - press enter to continue");
+            let _ = std::io::stdin().read_line(&mut String::new());
+            continue;
+        } else {
+            println!("Disambiguation page found - press enter to continue");
+
+            continue;
         }
     }
-    get_article(article_name)
+    let search_result = search_result.unwrap();
+    if search_result.len() == 1 {
+        return get_article(search_result[0].title.to_owned());
+    }
+    todo!()
 }
 
 fn get_random_article() -> Vec<String> {
     let mut word;
     loop {
         word = random_word::gen(Lang::En);
-        let not_article_is_disambiguation = check_article(word.to_owned());
-        if not_article_is_disambiguation {
+        let search_result = check_article(word.to_owned());
+        if search_result {
             break;
         }
     }
@@ -112,23 +130,148 @@ fn get_random_article() -> Vec<String> {
     get_article(word.to_string())
 }
 
-fn check_article(article_name: String) -> bool {
-    let response =
-        reqwest::blocking::get(&format!("https://en.wikipedia.org/wiki/{}", article_name));
-
-    match response {
-        Ok(response) => return response.text().unwrap().contains(" may refer to:"),
-        Err(_) => return false,
+fn check_article(search_term: String) -> bool {
+    let formatted_search_term = search_term.replace(" ", "_");
+    let url = format!("https://en.wikipedia.org/wiki/{}", formatted_search_term);
+    let soup = Soup::new(&reqwest::blocking::get(&url).unwrap().text().unwrap());
+    let query = soup.tag("b").find_all();
+    for tag in query {
+        if tag
+            .text()
+            .contains("Wikipedia does not have an article with this exact name.")
+        {
+            return false;
+        }
     }
+
+    let query = soup
+        .tag("div")
+        .attr("class", "mw-content-ltr mw-parser-output")
+        .find()
+        .unwrap()
+        .tag("p")
+        .find()
+        .unwrap()
+        .text();
+    if query.contains("may refer to:") {
+        return false;
+    }
+    true
 }
 
-fn get_article(article_name: String) -> Vec<String> {
+fn search_for_articles(article_name: String) -> Result<Vec<Articles>, usize> {
+    let formatted_article_name = article_name.replace(" ", "+");
+    let mut articles: Vec<Articles> = Vec::new();
+    let url = format!(
+        "https://en.wikipedia.org/w/index.php?search={}&title=Special:Search&profile=advanced&fulltext=1&ns0=1",
+        formatted_article_name
+    );
+    let soup = Soup::new(&reqwest::blocking::get(&url).unwrap().text().unwrap());
+    let query = soup.tag("p").attr("class", "mw-search-nonefound").find();
+    if query.is_some() {
+        return Err(2);
+    }
+    let query = soup
+        .tag("ul")
+        .attr("class", "mw-search-results")
+        .find()
+        .unwrap()
+        .tag("li")
+        .find_all();
+    for tag in query {
+        let title = tag
+            .tag("div")
+            .attr("class", "mw-search-result-heading")
+            .find()
+            .unwrap()
+            .tag("a")
+            .find()
+            .unwrap()
+            .attr_name("title")
+            .find()
+            .unwrap()
+            .text();
+        let description = tag
+            .tag("div")
+            .attr("class", "searchresult")
+            .find()
+            .unwrap()
+            .text();
+        let url = tag
+            .tag("div")
+            .attr("class", "mw-search-result-heading")
+            .find()
+            .unwrap()
+            .tag("a")
+            .find()
+            .unwrap()
+            .attr_name("href")
+            .find()
+            .unwrap()
+            .text();
+        if description.contains("may refer to:") {
+            let temp_articles = get_disambiguation_articles(url);
+            articles.extend(temp_articles);
+            continue;
+        }
+        let article = Articles {
+            title: title.to_owned(),
+            description: description.to_owned(),
+        };
+        articles.push(article);
+    }
+
     todo!()
+}
+
+fn get_article(articles: String) -> Vec<String> {
+    todo!()
+}
+
+fn get_disambiguation_articles(url: String) -> Vec<Articles> {
+    let soup = Soup::new(
+        &reqwest::blocking::get(format!("https://en.wikipedia.org/{}", url))
+            .unwrap()
+            .text()
+            .unwrap(),
+    );
+    let query = soup
+        .tag("div")
+        .attr("class", "mw-content-ltr mw-parser-output")
+        .find()
+        .unwrap()
+        .tag("ul")
+        .find_all();
+    let mut articles: HashMap<String, Articles> = HashMap::new();
+    for list in query {
+        let query = list.tag("li").find_all();
+        for tag in query {
+            let temp = tag.tag("a").find();
+            if temp.is_none() {
+                continue;
+            }
+            let title = temp
+                .clone()
+                .unwrap()
+                .attr_name("title")
+                .find()
+                .unwrap()
+                .text();
+            let description = tag.text();
+            let url = temp.unwrap().attr_value("href").find().unwrap().text();
+            let article = Articles {
+                title: title.to_owned(),
+                description: description.to_owned(),
+            };
+            articles.insert(url, article);
+        }
+    }
+    articles.into_iter().map(|(_, v)| v).collect()
 }
 
 fn menu() -> usize {
     get_options(
-        "Test".to_owned(),
+        "Welcome to WikiReader".to_string(),
         vec![
             String::from("Read previous article"),
             String::from("Search for article"),
