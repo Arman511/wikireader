@@ -90,8 +90,8 @@ fn get_previous_article() -> Vec<String> {
 fn search_for_article() -> Vec<String> {
     println!("Search for article");
     let mut search_result;
+    let mut input = String::new();
     loop {
-        let mut input = String::new();
         println!("Enter article name: ");
         std::io::stdin()
             .read_line(&mut input)
@@ -104,17 +104,25 @@ fn search_for_article() -> Vec<String> {
             println!("No article found with that name - press enter to continue");
             let _ = std::io::stdin().read_line(&mut String::new());
             continue;
-        } else {
-            println!("Disambiguation page found - press enter to continue");
-
-            continue;
         }
     }
     let search_result = search_result.unwrap();
     if search_result.len() == 1 {
         return get_article(search_result[0].title.to_owned());
     }
-    todo!()
+    let temp = search_result
+        .iter()
+        .find(|a| a.title.to_lowercase() == input.trim().to_lowercase());
+    if let Some(article) = temp {
+        return get_article(article.title.clone());
+    }
+    let options: Vec<String> = search_result
+        .iter()
+        .map(|a| format!("{} - {}", a.title, a.description))
+        .collect();
+    let option = get_options(String::from("Pick your option"), options);
+
+    get_article(search_result[option - 1].title.clone())
 }
 
 fn get_random_article() -> Vec<String> {
@@ -169,7 +177,7 @@ fn search_for_articles(article_name: String) -> Result<Vec<Articles>, usize> {
     let soup = Soup::new(&reqwest::blocking::get(&url).unwrap().text().unwrap());
     let query = soup.tag("p").attr("class", "mw-search-nonefound").find();
     if query.is_some() {
-        return Err(2);
+        return Err(0);
     }
     let query = soup
         .tag("ul")
@@ -220,11 +228,11 @@ fn search_for_articles(article_name: String) -> Result<Vec<Articles>, usize> {
         };
         articles.push(article);
     }
-
-    todo!()
+    Ok(articles)
 }
 
 fn get_article(articles: String) -> Vec<String> {
+    let _search_title = articles.replace(" ", "_");
     todo!()
 }
 
